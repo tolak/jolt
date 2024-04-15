@@ -32,6 +32,7 @@ use crate::{
         errors::ProofVerifyError,
         math::Math,
         transcript::{AppendToTranscript, ProofTranscript},
+        thread::unsafe_allocate_zero_vec,
     },
 };
 
@@ -990,17 +991,21 @@ where
 
         let subtable_lookup_indices: Vec<Vec<usize>> = Self::subtable_lookup_indices(ops);
 
+        let _span = tracing::span!(tracing::Level::INFO, "construct_read_final");
+        let _enter = _span.enter();
         let polys: Vec<(DensePolynomial<F>, DensePolynomial<F>, DensePolynomial<F>)> = (0
             ..preprocessing.num_memories)
             .into_par_iter()
             .map(|memory_index| {
+                let _inner_span = tracing::span!(tracing::Level::INFO, "poly_loop_inner");
+                let _inner_enter = _span.enter();
                 let dim_index = preprocessing.memory_to_dimension_index[memory_index];
                 let subtable_index = preprocessing.memory_to_subtable_index[memory_index];
                 let access_sequence: &Vec<usize> = &subtable_lookup_indices[dim_index];
 
                 let mut final_cts_i = vec![0usize; M];
                 let mut read_cts_i = vec![0usize; m];
-                let mut subtable_lookups = vec![F::zero(); m];
+                let mut subtable_lookups = unsafe_allocate_zero_vec(m);
 
                 for (j, op) in ops.iter().enumerate() {
                     if let Some(op) = op {
@@ -1026,14 +1031,16 @@ where
                 )
             })
             .collect();
+        drop(_enter);
 
+        let guard = _span.enter();
         // Vec<(DensePolynomial<F>, DensePolynomial<F>, DensePolynomial<F>)> -> (Vec<DensePolynomial<F>>, Vec<DensePolynomial<F>>, Vec<DensePolynomial<F>>)
         let (read_cts, final_cts, E_polys): (
             Vec<DensePolynomial<F>>,
             Vec<DensePolynomial<F>>,
             Vec<DensePolynomial<F>>,
         ) = polys.into_iter().fold(
-            (Vec::new(), Vec::new(), Vec::new()),
+            (Vec::with_capacity(preprocessing.num_memories), Vec::with_capacity(preprocessing.num_memories), Vec::with_capacity(preprocessing.num_memories)),
             |(mut read_acc, mut final_acc, mut E_acc), (read, f, E)| {
                 read_acc.push(read);
                 final_acc.push(f);
@@ -1041,7 +1048,9 @@ where
                 (read_acc, final_acc, E_acc)
             },
         );
+        drop(guard);
 
+        let guard = _span.enter();
         let dim: Vec<DensePolynomial<F>> = (0..C)
             .into_par_iter()
             .map(|i| {
@@ -1049,7 +1058,9 @@ where
                 DensePolynomial::from_usize(access_sequence)
             })
             .collect();
+        drop(guard);
 
+        let guard = _span.enter();
         let mut instruction_flag_bitvectors: Vec<Vec<u64>> =
             vec![vec![0u64; m]; Self::NUM_INSTRUCTIONS];
         for (j, op) in ops.iter().enumerate() {
@@ -1057,15 +1068,34 @@ where
                 instruction_flag_bitvectors[InstructionSet::enum_index(op)][j] = 1;
             }
         }
+        drop(guard);
 
+        let _span = tracing::span!(tracing::Level::INFO, "instruction_flag_bitvectors");
+        let guard = _span.enter();
         let instruction_flag_polys: Vec<DensePolynomial<F>> = instruction_flag_bitvectors
             .par_iter()
-            .map(|flag_bitvector| DensePolynomial::from_u64(flag_bitvector))
-            .collect();
+            .map(|flag_bitvector| {
+                let mut flag_vector = unsafe_allocate_zero_vec::<F>(m);
 
+                flag_vector
+                    .par_iter_mut()
+                    .zip(flag_bitvector)
+                    .for_each(|(flag, bit)| {
+                        if *bit == 1 {
+                            *flag = F::one();
+                        }
+                    });
+
+                DensePolynomial::new(flag_vector)
+            })
+            .collect();
+        drop(guard);
+
+        let guard = _span.enter();
         let mut lookup_outputs = Self::compute_lookup_outputs(&ops);
         lookup_outputs.resize(m, F::zero());
         let lookup_outputs = DensePolynomial::new(lookup_outputs);
+        drop(guard);
 
         InstructionPolynomials {
             _group: PhantomData,
@@ -1424,7 +1454,7 @@ where
         let m = ops.len().next_power_of_two();
         let log_M = M.log_2();
         let chunked_indices: Vec<Vec<usize>> = ops
-            .iter()
+            .par_iter()
             .map(|op| {
                 if let Some(op) = op {
                     op.to_indices(C, log_M)

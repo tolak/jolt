@@ -255,19 +255,27 @@ impl<F: PrimeField> DensePolynomial<F> {
         flat
     }
 
-    #[tracing::instrument(skip_all, name = "DensePolynomial::from")]
+    #[tracing::instrument(skip_all, name = "DensePolynomial::from_usize")]
     pub fn from_usize(Z: &[usize]) -> Self {
-        DensePolynomial::new(
-            (0..Z.len())
-                .map(|i| F::from_u64(Z[i] as u64).unwrap())
-                .collect::<Vec<F>>(),
-        )
+        let mut evals = unsafe_allocate_zero_vec::<F>(Z.len());
+        evals.par_iter_mut().zip(Z).for_each(|(eval, Z)| {
+            *eval = F::from_u64(*Z as u64).unwrap()
+        });
+        DensePolynomial::new(evals)
+
+        // DensePolynomial::new(
+        //     (0..Z.len())
+        //         .into_par_iter()
+        //         .map(|i| F::from_u64(Z[i] as u64).unwrap())
+        //         .collect::<Vec<F>>(),
+        // )
     }
 
-    #[tracing::instrument(skip_all, name = "DensePolynomial::from")]
+    #[tracing::instrument(skip_all, name = "DensePolynomial::from_u64")]
     pub fn from_u64(Z: &[u64]) -> Self {
         DensePolynomial::new(
             (0..Z.len())
+                .into_par_iter()
                 .map(|i| F::from_u64(Z[i]).unwrap())
                 .collect::<Vec<F>>(),
         )
