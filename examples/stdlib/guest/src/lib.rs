@@ -8,7 +8,7 @@ fn int_to_string(n: i32) -> String {
 #[jolt::provable]
 fn string_vecs(n: u32) -> String {
     let mut res = String::new();
-    for i in 0..n {
+    for i in 65..65+n {
         res += &i.to_string();
     }
 
